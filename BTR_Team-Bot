@@ -1,139 +1,313 @@
-package com.btr.teambot;
+package com.example.rankingbot;
 
-import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.JDA;
 import net.dv8tion.jda.api.JDABuilder;
-import net.dv8tion.jda.api.entities.Role;
-import net.dv8tion.jda.api.events.interaction.component.ButtonInteractionEvent;
-import net.dv8tion.jda.api.events.interaction.component.StringSelectInteractionEvent;
-import net.dv8tion.jda.api.events.message.MessageReceivedEvent;
-import net.dv8tion.jda.api.hooks.ListenerAdapter;
-import net.dv8tion.jda.api.interactions.components.buttons.Button;
-import net.dv8tion.jda.api.interactions.components.selections.StringSelectMenu;
 import net.dv8tion.jda.api.requests.GatewayIntent;
+import net.dv8tion.jda.api.utils.ChunkingFilter;
+import net.dv8tion.jda.api.utils.MemberCachePolicy;
 
-import java.awt.Color;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.List;
-
-public class Main extends ListenerAdapter {
-
-    public static void main(String[] args) throws Exception {
+public class Main {
+    public static void main(String[] args) throws InterruptedException {
+        // Le token doit être fourni via une variable d'environnement, jamais écrit en dur dans le code.
         String token = System.getenv("DISCORD_TOKEN");
-
         if (token == null || token.isBlank()) {
-            System.err.println("ERREUR: la variable DISCORD_TOKEN n'est pas configurée.");
-            System.err.println("Windows PowerShell: $env:DISCORD_TOKEN=\"TON_TOKEN\"");
-            return;
+            System.err.println("Erreur : la variable d'environnement DISCORD_TOKEN n'est pas définie.");
+            System.exit(1);
         }
 
         JDA jda = JDABuilder.createDefault(token)
-                .enableIntents(GatewayIntent.GUILD_MESSAGES, GatewayIntent.MESSAGE_CONTENT, GatewayIntent.GUILD_MEMBERS)
-                .addEventListeners(new Main())
+                // GUILD_MEMBERS et MESSAGE_CONTENT sont des intents "privilégiés" :
+                // il faut les activer manuellement dans le Discord Developer Portal (voir README).
+                .enableIntents(
+                        GatewayIntent.GUILD_MEMBERS,
+                        GatewayIntent.MESSAGE_CONTENT,
+                        GatewayIntent.GUILD_MESSAGES
+                )
+                .setMemberCachePolicy(MemberCachePolicy.ALL)
+                .setChunkingFilter(ChunkingFilter.ALL)
+                .addEventListeners(new RankingListener())
                 .build();
 
         jda.awaitReady();
-        System.out.println("BTR Team Bot est connecté !");
+        System.out.println("Bot connecté : " + jda.getSelfUser().getAsTag());
+    }
+}
+package com.example.rankingbot;
+
+import net.dv8tion.jda.api.EmbedBuilder;
+import net.dv8tion.jda.api.entities.Guild;
+import net.dv8tion.jda.api.entities.Member;
+import net.dv8tion.jda.api.entities.MessageEmbed;
+import net.dv8tion.jda.api.entities.Role;
+import net.dv8tion.jda.api.entities.channel.middleman.MessageChannel;
+import net.dv8tion.jda.api.events.interaction.component.ButtonInteractionEvent;
+import net.dv8tion.jda.api.events.interaction.component.GenericComponentInteractionCreateEvent;
+import net.dv8tion.jda.api.events.interaction.component.StringSelectInteractionEvent;
+import net.dv8tion.jda.api.events.message.MessageReceivedEvent;
+import net.dv8tion.jda.api.hooks.ListenerAdapter;
+import net.dv8tion.jda.api.interactions.components.ActionRow;
+import net.dv8tion.jda.api.interactions.components.buttons.Button;
+import net.dv8tion.jda.api.interactions.components.selections.SelectOption;
+import net.dv8tion.jda.api.interactions.components.selections.StringSelectMenu;
+
+import java.awt.Color;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
+
+/**
+ * Bot de classement d'équipe.
+ *
+ * NOTE : Discord ne permet pas un vrai "glisser-déposer" dans ses messages.
+ * L'échange de place entre deux joueurs se fait ici via deux menus déroulants
+ * successifs (on choisit le joueur A, puis le joueur B, et ils échangent leur position).
+ *
+ * Les données sont stockées en mémoire : elles sont perdues si le bot redémarre.
+ * Pour une persistance réelle, il faudrait sauvegarder guildDataMap dans un fichier
+ * ou une base de données (voir le README).
+ */
+public class RankingListener extends ListenerAdapter {
+
+    private static class GuildData {
+        String roleId;                 // Rôle dont les membres apparaissent dans le classement
+        List<String> order = new ArrayList<>(); // IDs des membres, dans l'ordre du classement
+        String rankingChannelId;       // Salon où se trouve le message de classement
+        String rankingMessageId;       // Message de classement à mettre à jour après un échange
     }
 
+    private final Map<String, GuildData> guildDataMap = new ConcurrentHashMap<>();
+
+    private GuildData dataFor(String guildId) {
+        return guildDataMap.computeIfAbsent(guildId, k -> new GuildData());
+    }
+
+    // ---------- Commande !setup ----------
     @Override
     public void onMessageReceived(MessageReceivedEvent event) {
-        if (!event.isFromGuild()) return;
-        if (event.getAuthor().isBot()) return;
+        if (event.getAuthor().isBot() || !event.isFromGuild()) return;
 
         String content = event.getMessage().getContentRaw().trim();
+        if (!content.equals("!setup") && !content.startsWith("!setup ")) return;
 
-        if (content.equalsIgnoreCase("!setup")) {
-            EmbedBuilder embed = new EmbedBuilder()
-                    .setTitle("🏆 SYSTÈME DE CLASSEMENT")
-                    .setDescription("Clique sur le bouton ci-dessous pour créer un classement à partir d'un rôle Discord.")
-                    .setColor(new Color(88, 101, 242));
+        Guild guild = event.getGuild();
+        GuildData data = dataFor(guild.getId());
 
-            event.getChannel().sendMessageEmbeds(embed.build())
-                    .setActionRow(Button.primary("setup_ranking", "🏆 Mettre Un Classement"))
+        List<Role> mentionedRoles = event.getMessage().getMentions().getRoles();
+        if (!mentionedRoles.isEmpty()) {
+            data.roleId = mentionedRoles.get(0).getId();
+        }
+
+        if (data.roleId == null) {
+            event.getChannel().sendMessage(
+                    "⚠️ Aucun rôle configuré. Relance la commande en mentionnant le rôle concerné, " +
+                    "par exemple : `!setup @Joueur`"
+            ).queue();
+            return;
+        }
+
+        event.getChannel().sendMessage("📋 Panneau de classement")
+                .setEmbeds(new EmbedBuilder()
+                        .setTitle("Panneau de classement")
+                        .setDescription("Clique sur le bouton ci-dessous pour afficher et gérer le classement de la team.")
+                        .setColor(Color.CYAN)
+                        .build())
+                .setActionRow(Button.primary("ranking_show", "Mettre Un Classement"))
+                .queue();
+    }
+
+    // ---------- Boutons ----------
+    @Override
+    public void onButtonInteraction(ButtonInteractionEvent event) {
+        Guild guild = event.getGuild();
+        if (guild == null) return;
+        GuildData data = dataFor(guild.getId());
+
+        switch (event.getComponentId()) {
+            case "ranking_show" -> showRanking(event, guild, data);
+            case "ranking_swap" -> openSwapMenu(event, guild, data, 1, null);
+            case "ranking_refresh" -> {
+                refreshOrderFromRole(guild, data, () -> {
+                    updateRankingMessage(guild, data);
+                    event.reply("✅ Classement actualisé (les nouveaux membres du rôle ont été ajoutés).")
+                            .setEphemeral(true).queue();
+                });
+            }
+            default -> { /* ignore */ }
+        }
+    }
+
+    // ---------- Menus déroulants (sélection des joueurs à échanger) ----------
+    @Override
+    public void onStringSelectInteraction(StringSelectInteractionEvent event) {
+        Guild guild = event.getGuild();
+        if (guild == null) return;
+        GuildData data = dataFor(guild.getId());
+        String id = event.getComponentId();
+        String chosenId = event.getValues().get(0);
+
+        if (id.equals("swap_select_1")) {
+            openSwapMenu(event, guild, data, 2, chosenId);
+            return;
+        }
+
+        if (id.startsWith("swap_select_2:")) {
+            String firstId = id.substring("swap_select_2:".length());
+            String secondId = chosenId;
+
+            if (firstId.equals(secondId)) {
+                event.reply("⚠️ Choisis deux joueurs différents.").setEphemeral(true).queue();
+                return;
+            }
+
+            int i1 = data.order.indexOf(firstId);
+            int i2 = data.order.indexOf(secondId);
+            if (i1 == -1 || i2 == -1) {
+                event.reply("⚠️ Un des joueurs n'est plus dans le classement. Relance l'échange.")
+                        .setEphemeral(true).queue();
+                return;
+            }
+
+            Collections.swap(data.order, i1, i2);
+            updateRankingMessage(guild, data);
+
+            event.editMessage("✅ Échange effectué !")
+                    .setComponents(Collections.emptyList())
                     .queue();
         }
     }
 
-    @Override
-    public void onButtonInteraction(ButtonInteractionEvent event) {
-        if (!event.getComponentId().equals("setup_ranking")) return;
+    // ---------- Logique interne ----------
 
-        List<Role> roles = new ArrayList<>(event.getGuild().getRoles());
-        roles.removeIf(r -> r.isManaged() || r.isPublicRole());
+    private void refreshOrderFromRole(Guild guild, GuildData data, Runnable onDone) {
+        if (data.roleId == null) return;
+        Role role = guild.getRoleById(data.roleId);
+        if (role == null) return;
 
-        roles.sort(Comparator.comparing(Role::getPosition).reversed());
+        guild.findMembersWithRole(role).onSuccess(members -> {
+            List<String> currentIds = members.stream().map(Member::getId).collect(Collectors.toList());
 
-        if (roles.isEmpty()) {
-            event.reply("❌ Aucun rôle utilisable n'a été trouvé.").setEphemeral(true).queue();
-            return;
-        }
-
-        StringSelectMenu.Builder menu = StringSelectMenu.create("ranking_role")
-                .setPlaceholder("Choisir la team / le rôle");
-
-        int max = Math.min(25, roles.size());
-        for (int i = 0; i < max; i++) {
-            Role role = roles.get(i);
-            menu.addOption(role.getName(), role.getId());
-        }
-
-        event.reply("👥 **Choisis le rôle de la team à classer :**")
-                .addActionRow(menu.build())
-                .setEphemeral(true)
-                .queue();
+            // Garde l'ordre déjà défini pour les membres toujours présents,
+            // ajoute les nouveaux membres à la fin, retire ceux qui n'ont plus le rôle.
+            List<String> newOrder = new ArrayList<>();
+            for (String id : data.order) {
+                if (currentIds.contains(id)) newOrder.add(id);
+            }
+            for (String id : currentIds) {
+                if (!newOrder.contains(id)) newOrder.add(id);
+            }
+            data.order = newOrder;
+            if (onDone != null) onDone.run();
+        });
     }
 
-    @Override
-    public void onStringSelectInteraction(StringSelectInteractionEvent event) {
-        if (!event.getComponentId().equals("ranking_role")) return;
-
-        String roleId = event.getValues().get(0);
-        Role role = event.getGuild().getRoleById(roleId);
-
+    private void showRanking(ButtonInteractionEvent event, Guild guild, GuildData data) {
+        if (data.roleId == null) {
+            event.reply("⚠️ Aucun rôle configuré. Utilise `!setup @Role` d'abord.").setEphemeral(true).queue();
+            return;
+        }
+        Role role = guild.getRoleById(data.roleId);
         if (role == null) {
-            event.reply("❌ Rôle introuvable.").setEphemeral(true).queue();
+            event.reply("⚠️ Le rôle configuré n'existe plus.").setEphemeral(true).queue();
             return;
         }
 
-        List<String> players = new ArrayList<>();
-        event.getGuild().findMembersWithRoles(role).forEach(member ->
-                players.add(member.getEffectiveName()));
+        event.deferReply().queue();
 
-        players.sort(String.CASE_INSENSITIVE_ORDER);
-
-        StringBuilder description = new StringBuilder();
-        if (players.isEmpty()) {
-            description.append("Aucun joueur possède actuellement ce rôle.");
-        } else {
-            String[] medals = {"🥇", "🥈", "🥉"};
-            for (int i = 0; i < players.size(); i++) {
-                String prefix = i < 3 ? medals[i] : (i + 1) + "️⃣";
-                description.append(prefix).append(" ").append(players.get(i)).append("\n");
+        guild.findMembersWithRole(role).onSuccess(members -> {
+            if (data.order.isEmpty()) {
+                data.order = members.stream().map(Member::getId).collect(Collectors.toList());
             }
+
+            data.rankingChannelId = event.getChannel().getId();
+
+            event.getHook().sendMessage("📋 Classement de la team")
+                    .addEmbeds(buildRankingEmbed(guild, data))
+                    .addActionRow(
+                            Button.secondary("ranking_swap", "🔀 Échanger deux joueurs"),
+                            Button.secondary("ranking_refresh", "🔄 Actualiser depuis le rôle")
+                    )
+                    .queue(msg -> data.rankingMessageId = msg.getId());
+        });
+    }
+
+    private MessageEmbed buildRankingEmbed(Guild guild, GuildData data) {
+        EmbedBuilder builder = new EmbedBuilder()
+                .setTitle("🏆 Classement")
+                .setColor(Color.ORANGE);
+
+        if (data.order.isEmpty()) {
+            builder.setDescription("Aucun joueur avec ce rôle pour le moment.");
+            return builder.build();
         }
 
-        EmbedBuilder embed = new EmbedBuilder()
-                .setTitle("🏆 CLASSEMENT — " + role.getName())
-                .setDescription(description.toString())
-                .setColor(role.getColor() != null ? role.getColor() : new Color(88, 101, 242))
-                .setFooter("Les membres sont récupérés automatiquement depuis le rôle Discord.");
+        StringBuilder sb = new StringBuilder();
+        int pos = 1;
+        for (String id : data.order) {
+            Member m = guild.getMemberById(id);
+            String name = (m != null) ? m.getEffectiveName() : ("Utilisateur inconnu (" + id + ")");
+            sb.append("**#").append(pos).append("** — ").append(name).append("\n");
+            pos++;
+        }
+        builder.setDescription(sb.toString());
+        return builder.build();
+    }
 
-        event.replyEmbeds(embed.build())
-                .setEphemeral(false)
-                .queue();
+    private void updateRankingMessage(Guild guild, GuildData data) {
+        if (data.rankingChannelId == null || data.rankingMessageId == null) return;
+        MessageChannel channel = guild.getJDA().getChannelById(MessageChannel.class, data.rankingChannelId);
+        if (channel == null) return;
+        channel.editMessageEmbedsById(data.rankingMessageId, buildRankingEmbed(guild, data))
+                .queue(success -> { }, failure -> { /* message supprimé entre-temps : on ignore */ });
+    }
+
+    private void openSwapMenu(GenericComponentInteractionCreateEvent event,
+                               Guild guild, GuildData data, int step, String firstChosenId) {
+        if (data.order.size() < 2) {
+            event.reply("⚠️ Il faut au moins deux joueurs dans le classement pour faire un échange.")
+                    .setEphemeral(true).queue();
+            return;
+        }
+
+        List<SelectOption> options = new ArrayList<>();
+        for (String id : data.order) {
+            if (step == 2 && id.equals(firstChosenId)) continue; // on ne repropose pas le même joueur
+            Member m = guild.getMemberById(id);
+            String label = (m != null) ? m.getEffectiveName() : ("Inconnu " + id);
+            options.add(SelectOption.of(label, id));
+        }
+
+        String menuId = (step == 1) ? "swap_select_1" : ("swap_select_2:" + firstChosenId);
+        String prompt = (step == 1)
+                ? "Choisis le **premier joueur** à échanger :"
+                : "Choisis le **second joueur** (il prendra la place du premier, et inversement) :";
+
+        StringSelectMenu menu = StringSelectMenu.create(menuId)
+                .setPlaceholder("Sélectionne un joueur")
+                .addOptions(options)
+                .build();
+
+        if (step == 1) {
+            event.reply(prompt).addActionRow(menu).setEphemeral(true).queue();
+        } else {
+            // step == 2 : on modifie le message éphémère existant plutôt que d'en créer un nouveau
+            ((StringSelectInteractionEvent) event).editMessage(prompt)
+                    .setComponents(ActionRow.of(menu))
+                    .queue();
+        }
     }
 }
-<?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>com.btr</groupId>
-    <artifactId>btr-team-bot</artifactId>
+    <groupId>com.example</groupId>
+    <artifactId>ranking-bot</artifactId>
     <version>1.0.0</version>
+    <packaging>jar</packaging>
 
     <properties>
         <maven.compiler.source>17</maven.compiler.source>
@@ -145,25 +319,32 @@ public class Main extends ListenerAdapter {
         <dependency>
             <groupId>net.dv8tion</groupId>
             <artifactId>JDA</artifactId>
-            <version>6.7.0</version>
+            <version>5.1.2</version>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-simple</artifactId>
+            <version>2.0.13</version>
         </dependency>
     </dependencies>
 
     <build>
         <plugins>
+            <!-- Produit un jar "fat jar" contenant toutes les dépendances -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
-                <version>3.6.1</version>
+                <version>3.5.1</version>
                 <executions>
                     <execution>
                         <phase>package</phase>
-                        <goals><goal>shade</goal></goals>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
                         <configuration>
-                            <createDependencyReducedPom>false</createDependencyReducedPom>
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                    <mainClass>com.btr.teambot.Main</mainClass>
+                                    <mainClass>com.example.rankingbot.Main</mainClass>
                                 </transformer>
                             </transformers>
                         </configuration>
@@ -173,8 +354,3 @@ public class Main extends ListenerAdapter {
         </plugins>
     </build>
 </project>
-target/
-.idea/
-.vscode/
-*.class
-.env
