@@ -1,26 +1,21 @@
-Discord
-│
-├── !setup
-│
-└── 🤖 Panneau du bot
-      │
-      └── [ 🏆 Mettre Un Classement ]
-                    │
-                    ▼
-             Sélection du rôle
-                    │
-                    ▼
-          ┌─────────────────────┐
-          │ CLASSEMENT — TEAM 1 │
-          │                     │
-          │ 🥇 Joueur1          │
-          │ 🥈 Joueur2          │
-          │ 🥉 Joueur3          │
-          │ 4️⃣ Joueur4          │
-          │ 5️⃣ Joueur5          │
-          └─────────────────────┘
-                    │
-             ↕ glisser-déposer
-                    │
-                    ▼
-             [ Sauvegarder ]
+!setup
+   ↓
+🏆 SYSTÈME DE CLASSEMENT
+
+[ 🏆 Mettre Un Classement ]
+   ↓
+Choisir le rôle Discord
+   ↓
+👥 Tous les membres de ce rôle
+   ↓
+🏆 CLASSEMENT — TEAM 1
+
+🥇 Joueur 1
+🥈 Joueur 2
+🥉 Joueur 3
+4️⃣ Joueur 4
+5️⃣ Joueur 5
+   ↓
+↕️ Glisser-déposer
+   ↓
+💾 Sauvegarder
