@@ -1,0 +1,26 @@
+Discord
+│
+├── !setup
+│
+└── 🤖 Panneau du bot
+      │
+      └── [ 🏆 Mettre Un Classement ]
+                    │
+                    ▼
+             Sélection du rôle
+                    │
+                    ▼
+          ┌─────────────────────┐
+          │ CLASSEMENT — TEAM 1 │
+          │                     │
+          │ 🥇 Joueur1          │
+          │ 🥈 Joueur2          │
+          │ 🥉 Joueur3          │
+          │ 4️⃣ Joueur4          │
+          │ 5️⃣ Joueur5          │
+          └─────────────────────┘
+                    │
+             ↕ glisser-déposer
+                    │
+                    ▼
+             [ Sauvegarder ]
