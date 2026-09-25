@@ -91,10 +91,10 @@ public class Main extends ListenerAdapter {
             menu.addOption(role.getName(), role.getId());
         }
 
-        event.reply("👥 **Choisis le rôle de la team à classer :**")
-                .addActionRow(menu.build())
-                .setEphemeral(true)
-                .queue();
+        event.reply("👥 **Choisis le rôle de la team à classer:**")
+        .addComponents(ActionRow.of(menu.build()))
+        .setEphemeral(true)
+        .queue();
     }
 
     @Override
