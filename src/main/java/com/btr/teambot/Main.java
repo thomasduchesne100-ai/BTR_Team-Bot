@@ -24,12 +24,15 @@ public class Main extends ListenerAdapter {
 
         if (token == null || token.isBlank()) {
             System.err.println("ERREUR: la variable DISCORD_TOKEN n'est pas configurée.");
-            System.err.println("Windows PowerShell: $env:DISCORD_TOKEN=\"TON_TOKEN\"");
             return;
         }
 
         JDA jda = JDABuilder.createDefault(token)
-                .enableIntents(GatewayIntent.GUILD_MESSAGES, GatewayIntent.MESSAGE_CONTENT, GatewayIntent.GUILD_MEMBERS)
+                .enableIntents(
+                        GatewayIntent.GUILD_MESSAGES,
+                        GatewayIntent.MESSAGE_CONTENT,
+                        GatewayIntent.GUILD_MEMBERS
+                )
                 .addEventListeners(new Main())
                 .build();
 
@@ -47,11 +50,16 @@ public class Main extends ListenerAdapter {
         if (content.equalsIgnoreCase("!setup")) {
             EmbedBuilder embed = new EmbedBuilder()
                     .setTitle("🏆 SYSTÈME DE CLASSEMENT")
-                    .setDescription("Clique sur le bouton ci-dessous pour créer un classement à partir d'un rôle Discord.")
+                    .setDescription(
+                            "Clique sur le bouton ci-dessous pour créer un classement à partir d'un rôle Discord."
+                    )
                     .setColor(new Color(88, 101, 242));
 
-            event.getChannel().sendMessageEmbeds(embed.build())
-                    .setActionRow(Button.primary("setup_ranking", "🏆 Mettre Un Classement"))
+            event.getChannel()
+                    .sendMessageEmbeds(embed.build())
+                    .setActionRow(
+                            Button.primary("setup_ranking", "🏆 Mettre Un Classement")
+                    )
                     .queue();
         }
     }
@@ -61,19 +69,26 @@ public class Main extends ListenerAdapter {
         if (!event.getComponentId().equals("setup_ranking")) return;
 
         List<Role> roles = new ArrayList<>(event.getGuild().getRoles());
+
         roles.removeIf(r -> r.isManaged() || r.isPublicRole());
 
-        roles.sort(Comparator.comparing(Role::getPosition).reversed());
+        roles.sort(
+                Comparator.comparing(Role::getPosition).reversed()
+        );
 
         if (roles.isEmpty()) {
-            event.reply("❌ Aucun rôle utilisable n'a été trouvé.").setEphemeral(true).queue();
+            event.reply("❌ Aucun rôle utilisable n'a été trouvé.")
+                    .setEphemeral(true)
+                    .queue();
             return;
         }
 
-        StringSelectMenu.Builder menu = StringSelectMenu.create("ranking_role")
-                .setPlaceholder("Choisir la team / le rôle");
+        StringSelectMenu.Builder menu =
+                StringSelectMenu.create("ranking_role")
+                        .setPlaceholder("Choisir la team / le rôle");
 
         int max = Math.min(25, roles.size());
+
         for (int i = 0; i < max; i++) {
             Role role = roles.get(i);
             menu.addOption(role.getName(), role.getId());
@@ -86,42 +101,80 @@ public class Main extends ListenerAdapter {
     }
 
     @Override
-    public void onStringSelectInteraction(StringSelectInteractionEvent event) {
+    public void onStringSelectInteraction(
+            StringSelectInteractionEvent event) {
+
         if (!event.getComponentId().equals("ranking_role")) return;
 
         String roleId = event.getValues().get(0);
+
         Role role = event.getGuild().getRoleById(roleId);
 
         if (role == null) {
-            event.reply("❌ Rôle introuvable.").setEphemeral(true).queue();
+            event.reply("❌ Rôle introuvable.")
+                    .setEphemeral(true)
+                    .queue();
             return;
         }
 
-        List<String> players = new ArrayList<>();
-        event.getGuild().findMembersWithRoles(role).forEach(member ->
-                players.add(member.getEffectiveName()));
+        event.getGuild().findMembersWithRoles(role).onSuccess(members -> {
 
-        players.sort(String.CASE_INSENSITIVE_ORDER);
+            List<String> players = new ArrayList<>();
 
-        StringBuilder description = new StringBuilder();
-        if (players.isEmpty()) {
-            description.append("Aucun joueur possède actuellement ce rôle.");
-        } else {
-            String[] medals = {"🥇", "🥈", "🥉"};
-            for (int i = 0; i < players.size(); i++) {
-                String prefix = i < 3 ? medals[i] : (i + 1) + "️⃣";
-                description.append(prefix).append(" ").append(players.get(i)).append("\n");
+            for (var member : members) {
+                players.add(member.getEffectiveName());
             }
-        }
 
-        EmbedBuilder embed = new EmbedBuilder()
-                .setTitle("🏆 CLASSEMENT — " + role.getName())
-                .setDescription(description.toString())
-                .setColor(role.getColor() != null ? role.getColor() : new Color(88, 101, 242))
-                .setFooter("Les membres sont récupérés automatiquement depuis le rôle Discord.");
+            players.sort(String.CASE_INSENSITIVE_ORDER);
 
-        event.replyEmbeds(embed.build())
-                .setEphemeral(false)
-                .queue();
+            StringBuilder description = new StringBuilder();
+
+            if (players.isEmpty()) {
+                description.append(
+                        "Aucun joueur possède actuellement ce rôle."
+                );
+            } else {
+                String[] medals = {"🥇", "🥈", "🥉"};
+
+                for (int i = 0; i < players.size(); i++) {
+                    String prefix;
+
+                    if (i < 3) {
+                        prefix = medals[i];
+                    } else {
+                        prefix = (i + 1) + "️⃣";
+                    }
+
+                    description
+                            .append(prefix)
+                            .append(" ")
+                            .append(players.get(i))
+                            .append("\n");
+                }
+            }
+
+            EmbedBuilder embed = new EmbedBuilder()
+                    .setTitle("🏆 CLASSEMENT — " + role.getName())
+                    .setDescription(description.toString())
+                    .setColor(
+                            role.getColor() != null
+                                    ? role.getColor()
+                                    : new Color(88, 101, 242)
+                    )
+                    .setFooter(
+                            "Les membres sont récupérés automatiquement depuis le rôle Discord."
+                    );
+
+            event.replyEmbeds(embed.build())
+                    .setEphemeral(false)
+                    .queue();
+
+        }).onError(error -> {
+
+            event.reply(
+                    "❌ Impossible de récupérer les membres de ce rôle."
+            ).setEphemeral(true).queue();
+
+        });
     }
 }
