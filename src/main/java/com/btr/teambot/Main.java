@@ -55,12 +55,9 @@ public class Main extends ListenerAdapter {
                     )
                     .setColor(new Color(88, 101, 242));
 
-            event.getChannel()
-                    .sendMessageEmbeds(embed.build())
-                    .setActionRow(
-                            Button.primary("setup_ranking", "🏆 Mettre Un Classement")
-                    )
-                    .queue();
+            event.getChannel().sendMessageEmbeds(embed.build())
+        .addComponents(ActionRow.of(Button.primary("setup_ranking", "🏆 Mettre Un Classement")))
+        .queue();
         }
     }
 
